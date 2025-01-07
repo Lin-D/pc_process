@@ -15,7 +15,7 @@ def load_and_merge_point_clouds():
     """加载并合并点云"""
     pcds = []
     # 读取点云文件
-    for i in range(12):
+    for i in range(15):
         pcd = o3d.io.read_point_cloud(f"data/table_{i+1}.ply")
         pcds.append(pcd)
     
