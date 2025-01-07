@@ -1,6 +1,6 @@
 import open3d as o3d
 import numpy as np
-import math
+import os
 
 import numpy as np
 import open3d as o3d
@@ -16,7 +16,7 @@ def generate_table_points():
     table_thickness = 0.04  # 厚度
     height = 0.75       # 高度
     leg_radius = 0.04   # 桌腿半径
-    points_per_face = 20000  # 每个面的点数
+    points_per_face = 5000  # 每个面的点数
     
     # 生成桌面点云
     # 上表面
@@ -39,7 +39,7 @@ def generate_table_points():
         [table_length/2 - leg_radius, table_width/2 - leg_radius]
     ]
     
-    points_per_leg = 15000
+    points_per_leg = 5000
     for leg_pos in leg_positions:
         # 生成圆柱体点云
         theta = np.random.uniform(0, 2*np.pi, points_per_leg)
@@ -129,18 +129,44 @@ def is_point_in_polygon(point, polygon):
     
     return inside
 
+def transform_to_local_view(points, normals, view_position):
+    """将点云转换到局部视角坐标系"""
+    # 计算局部坐标系
+    z_axis = -view_position / np.linalg.norm(view_position)  # 指向原点
+    temp_up = np.array([0, 0, 1])
+    x_axis = np.cross(temp_up, z_axis)
+    x_axis = x_axis / np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+    
+    # 构建旋转矩阵
+    R = np.vstack([x_axis, y_axis, z_axis]).T
+    
+    # 转换点云到局部坐标系
+    local_points = (points - view_position) @ R
+    local_normals = normals @ R
+    
+    return local_points, local_normals
+
 def simulate_view(points, normals, view_position):
     """模拟从特定视角观察到的点云"""
     surfaces = create_table_surfaces()
     visible_points = []
     visible_normals = []
     
+    # 先判断可见性
     for point, normal in zip(points, normals):
         if is_point_visible(point, view_position, surfaces):
             visible_points.append(point)
             visible_normals.append(normal)
     
-    return np.array(visible_points), np.array(visible_normals)
+    visible_points = np.array(visible_points)
+    visible_normals = np.array(visible_normals)
+    
+    # 转换到局部坐标系
+    local_points, local_normals = transform_to_local_view(
+        visible_points, visible_normals, view_position)
+    
+    return local_points, local_normals
 
 def main():
     # 生成完整桌子点云
@@ -158,35 +184,28 @@ def main():
     
     # 定义不同的视角位置
     view_positions = [
-        [2, 2, 2],     # 右上方
-        [-2, 2, 2],    # 左上方
-        [2, -2, 2],    # 右下方
-        [-2, -2, 2],   # 左下方
-        [0, 0, 3],     # 正上方
-        [2, 0, 1],     # 右侧中部
-        [-2, 0, 1],    # 左侧中部
-        [0, 2, 1],     # 前方中部
-        [0, -2, 1],    # 后方中部
-        [0, 0, 0.5],   # 低角度
-        [0, 0, -1],    # 从下方看
-        [1, 1, -1],
-        [2, 1, -0.5],
-        [0, -2, -1],
-        [-1, -1, -0.5]
+        [2, 2, 2],
+        [-2, 2, 2],
+        [2, -2, 2],
+        [-2, -2, 2],
+        [2, 2, 0],
+        [-2, 2, 0],
+        [2, -2, 0],
+        [-2, -2, 0]
     ]
     
     # 从每个视角生成部分点云
     for i, view_pos in enumerate(view_positions):
-        visible_points, visible_normals = simulate_view(points, normals, np.array(view_pos))
+        local_points, local_normals = simulate_view(points, normals, np.array(view_pos))
         
         # 创建点云对象并保存
         pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(visible_points)
-        pcd.normals = o3d.utility.Vector3dVector(visible_normals)
-        
+        pcd.points = o3d.utility.Vector3dVector(local_points)
+        pcd.normals = o3d.utility.Vector3dVector(local_normals)
+        os.makedirs("data", exist_ok=True)
         filename = f"data/table_{i+1}.ply"
         o3d.io.write_point_cloud(filename, pcd)
-        print(f"保存视角{i+1}的点云，视点位置 {view_pos}，点数 {len(visible_points)}")
+        print(f"保存视角{i+1}的局部坐标系点云，点数 {len(local_points)}")
 
 if __name__ == "__main__":
     main()
