@@ -81,7 +81,7 @@ def sort_by_z(pcd):
 
 def main(pcd_name):
     # 读取点云文件
-    pcd = o3d.io.read_point_cloud(f"lidar_data/{pcd_name}.ply")
+    pcd = o3d.io.read_point_cloud(f"lidar_data/{pcd_name}.pcd")
 
     # 删除其中nan的点
     pcd = pcd.remove_non_finite_points()
@@ -100,17 +100,19 @@ def main(pcd_name):
     o3d.visualization.draw_geometries([sorted_pcd])
 
     # 从排序好的点云中选取地面点
+    num_point = 500
     while True:
-        num_point = int(input("输入地面点数："))
         colors = np.zeros((len(sorted_points), 3))
         colors[:num_point] = [1, 0, 0]
         sorted_pcd.colors = o3d.utility.Vector3dVector(colors)
         o3d.visualization.draw_geometries([sorted_pcd])
         if input("是否需要调整地面点数？(y/n)") == "n":
             break
+        else:
+            num_point = int(input("输入地面点数："))
         
     # 使用这些点移除地面
-    threshold = 0.4
+    threshold = 0.1
     while True:
         ground_points = np.asarray(sorted_pcd.points)[:num_point]
         non_ground_pcd = remove_ground_by_plane(sorted_pcd, ground_points, threshold=threshold)
@@ -122,8 +124,9 @@ def main(pcd_name):
             threshold = float(input("输入新的阈值："))
         
     # 保存结果
-    o3d.io.write_point_cloud(f"lidar_data/nonground_{pcd_name}.ply", non_ground_pcd)
+    o3d.io.write_point_cloud(f"lidar_data/nonground_{pcd_name}.pcd", non_ground_pcd)
     
 
 if __name__ == "__main__":
-    main('sofa_9')
+    for i in range(8):
+        main(f"table_{i+1}")
