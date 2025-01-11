@@ -112,7 +112,7 @@ def main(pcd_name):
             num_point = int(input("输入地面点数："))
         
     # 使用这些点移除地面
-    threshold = 0.1
+    threshold = 0.05
     while True:
         ground_points = np.asarray(sorted_pcd.points)[:num_point]
         non_ground_pcd = remove_ground_by_plane(sorted_pcd, ground_points, threshold=threshold)

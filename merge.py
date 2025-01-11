@@ -23,6 +23,48 @@ def remove_outliers(pcd, nb_neighbors=20, std_ratio=2.0, radius=0.05, min_points
     return pcd
 
 
+def optimize_planar_region(pcd, distance_threshold=0.02, min_ratio=0.05):
+    
+    points = np.asarray(pcd.points)
+    optimized_points = points.copy()
+
+    pcd.estimate_normals(
+        o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
+    )
+    
+    remaining_indices = list(range(len(points)))
+    while len(remaining_indices) > len(points) * min_ratio:
+        temp_pcd = o3d.geometry.PointCloud()
+        temp_pcd.points = o3d.utility.Vector3dVector(points[remaining_indices])
+
+        plane_model, inliers = temp_pcd.segment_plane(
+            distance_threshold=distance_threshold,
+            ransac_n=3,
+            num_iterations=1000
+        )
+        
+        if len(inliers) < len(remaining_indices) * min_ratio:
+            break
+    
+        a, b, c, d = plane_model
+        normal = np.array([a, b, c])
+
+        plane_indices = np.array(remaining_indices)[inliers]
+        plane_points = points[plane_indices]
+
+        distances = np.abs(np.dot(plane_points, normal) + d)
+        projections = plane_points - np.outer(distances, normal)
+
+        optimized_points[plane_indices] = projections
+
+        remaining_indices = list(set(remaining_indices) - set(plane_indices))
+
+    optimized_pcd = o3d.geometry.PointCloud()
+    optimized_pcd.points = o3d.utility.Vector3dVector(optimized_points)
+
+    return optimized_pcd
+    
+
 def preprocess_point_cloud(pcd, voxel_size):
     """预处理点云: 降采样并计算FPFH特征"""
     # 先移除离群点
@@ -118,8 +160,9 @@ def load_and_merge_point_clouds():
     """加载并合并点云"""
     pcds = []
     # 读取并预处理点云
-    for i in tqdm(range(7), desc="Loading and preprocessing point clouds"):
+    for i in tqdm(range(46), desc="Loading and preprocessing point clouds"):
         pcd = o3d.io.read_point_cloud(f"lidar_data/nonground_table_{i+1}.pcd")
+        # pcd = optimize_planar_region(pcd)
         pcds.append(pcd)
     
     if len(pcds) < 2:
