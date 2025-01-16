@@ -1,3 +1,4 @@
+from curses import window
 import open3d as o3d
 import numpy as np
 from tqdm import tqdm
@@ -21,48 +22,6 @@ def remove_outliers(pcd, nb_neighbors=20, std_ratio=2.0, radius=0.05, min_points
     pcd = pcd.select_by_index(ind)
     
     return pcd
-
-
-def optimize_planar_region(pcd, distance_threshold=0.02, min_ratio=0.05):
-    
-    points = np.asarray(pcd.points)
-    optimized_points = points.copy()
-
-    pcd.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
-    )
-    
-    remaining_indices = list(range(len(points)))
-    while len(remaining_indices) > len(points) * min_ratio:
-        temp_pcd = o3d.geometry.PointCloud()
-        temp_pcd.points = o3d.utility.Vector3dVector(points[remaining_indices])
-
-        plane_model, inliers = temp_pcd.segment_plane(
-            distance_threshold=distance_threshold,
-            ransac_n=3,
-            num_iterations=1000
-        )
-        
-        if len(inliers) < len(remaining_indices) * min_ratio:
-            break
-    
-        a, b, c, d = plane_model
-        normal = np.array([a, b, c])
-
-        plane_indices = np.array(remaining_indices)[inliers]
-        plane_points = points[plane_indices]
-
-        distances = np.abs(np.dot(plane_points, normal) + d)
-        projections = plane_points - np.outer(distances, normal)
-
-        optimized_points[plane_indices] = projections
-
-        remaining_indices = list(set(remaining_indices) - set(plane_indices))
-
-    optimized_pcd = o3d.geometry.PointCloud()
-    optimized_pcd.points = o3d.utility.Vector3dVector(optimized_points)
-
-    return optimized_pcd
     
 
 def preprocess_point_cloud(pcd, voxel_size):
@@ -70,24 +29,28 @@ def preprocess_point_cloud(pcd, voxel_size):
     # 先移除离群点
     pcd = remove_outliers(pcd, nb_neighbors=15, std_ratio=2.5, radius=0.1, min_points=10)
     # 降采样
-    pcd_down = pcd.voxel_down_sample(voxel_size)
+    # pcd_down = pcd.voxel_down_sample(voxel_size)
     
     radius_normal = voxel_size * 3
-    pcd_down.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
+    pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
     
     radius_feature = voxel_size * 6
     pcd_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
-        pcd_down,
+        pcd,
         o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100))
-    return pcd_down, pcd_fpfh
+    return pcd, pcd_fpfh
 
 
 def pairwise_registration(source, target):
     """两两配准点云, 使用双尺度策略"""
     # 双尺度配准参数 - 减少层级避免累积误差
-    voxel_sizes = [0.08, 0.04]  # 只用两个尺度
-    max_iterations = [50, 100]  # 增加迭代次数
+    voxel_sizes = [0.2, 0.1]
+    max_iterations = [100, 200]
     current_transformation = np.identity(4)
+    
+    source.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+    target.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+    
     
     for scale in range(len(voxel_sizes)):
         voxel_size = voxel_sizes[scale]
@@ -126,31 +89,48 @@ def pairwise_registration(source, target):
     return current_transformation if reg_p2p.fitness > 0.3 else None
 
 
-def denoise_merged_cloud(pcd, radius=0.05, knn=30):
-    """合并后的点云去噪和优化"""
-    # 1. 估计法向量和曲率
-    pcd.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=knn))
+def denoise_merged_cloud(pcd, radius=0.1, knn=50):
+    """合并后的点云去噪和优化
+    Args:
+        pcd: 输入点云
+        radius: 搜索半径, 增大以获取更大区域
+        knn: k近邻数量, 增大以考虑更多点
+    """
+    # 1. 估计法向量 - 使用更大的搜索范围
+    search_param = o3d.geometry.KDTreeSearchParamHybrid(
+        radius=radius*1.5, max_nn=knn)
+    pcd.estimate_normals(search_param)
     
-    # 2. 基于法向量一致性过滤
-    normals = np.asarray(pcd.normals)
-    points = np.asarray(pcd.points)
-    
-    # 3. MLS平滑
-    alpha = 1.2  # 搜索半径系数
-    optimizer = o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt()
-    option = o3d.pipelines.registration.GlobalOptimizationOption(
-        max_correspondence_distance=radius,
-        edge_prune_threshold=0.25,
-        reference_node=0)
-    
-    # 4. 统计滤波去除异常点
-    cl, ind = pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=1.0)
+    # 2. 统计滤波 - 放宽过滤条件
+    cl, ind = pcd.remove_statistical_outlier(
+        nb_neighbors=100,  # 增大邻域点数
+        std_ratio=2.0     # 放宽标准差倍数
+    )
     pcd = pcd.select_by_index(ind)
     
-    # 5. RANSAC平面拟合和优化
+    # 3. 平滑处理
+    points = np.asarray(pcd.points)
+    normals = np.asarray(pcd.normals)
+    pcd_tree = o3d.geometry.KDTreeFlann(pcd)
+    smoothed_points = np.zeros_like(points)
+    
+    # 对每个点进行加权平均平滑
+    for i in range(len(points)):
+        # 查找大范围邻域点
+        [k, idx, _] = pcd_tree.search_radius_vector_3d(points[i], radius)
+        if k < 10:  # 确保有足够的邻域点
+            smoothed_points[i] = points[i]
+            continue
+            
+        # 基于距离的加权平均
+        neighbors = points[idx]
+        distances = np.linalg.norm(neighbors - points[i], axis=1)
+        weights = np.exp(-distances / (radius * 0.5))  # 高斯权重
+        smoothed_points[i] = np.average(neighbors, weights=weights, axis=0)
+    
+    # 创建平滑后的点云
     smooth_pcd = o3d.geometry.PointCloud()
-    smooth_pcd.points = o3d.utility.Vector3dVector(points)
+    smooth_pcd.points = o3d.utility.Vector3dVector(smoothed_points)
     smooth_pcd.normals = o3d.utility.Vector3dVector(normals)
     
     return smooth_pcd
@@ -160,9 +140,11 @@ def load_and_merge_point_clouds():
     """加载并合并点云"""
     pcds = []
     # 读取并预处理点云
-    for i in tqdm(range(46), desc="Loading and preprocessing point clouds"):
-        pcd = o3d.io.read_point_cloud(f"lidar_data/nonground_table_{i+1}.pcd")
-        # pcd = optimize_planar_region(pcd)
+    for i in tqdm(range(65, 67), desc="Loading and preprocessing point clouds"):
+        pcd = o3d.io.read_point_cloud(f"lidar_data/4 (Frame {i+1}).pcd")
+        pcd = remove_outliers(pcd, nb_neighbors=15, std_ratio=2.5, radius=0.1, min_points=10)
+        o3d.visualization.draw_geometries([pcd], window_name=f"Frame {i+1} (Filtered)")
+        print(pcd)
         pcds.append(pcd)
     
     if len(pcds) < 2:
@@ -181,14 +163,15 @@ def load_and_merge_point_clouds():
     
     # 合并点云
     merged_pcd = o3d.geometry.PointCloud()
-    for i in tqdm(range(len(pcds)), desc="Merging point clouds"):
+    for i in tqdm(range(len(pcds)), desc="Merging"):
         temp = pcds[i]
         temp.transform(transformations[i])
         merged_pcd += temp
     
     # 最终处理
-    merged_pcd = remove_outliers(merged_pcd)  # 移除噪声
-    merged_pcd = merged_pcd.voxel_down_sample(0.02)  # 均匀化点云密度
+    # merged_pcd = merged_pcd.voxel_down_sample(0.02)  # 均匀化点云密度
+    # merged_pcd = denoise_merged_cloud(merged_pcd)  # 去噪和优化
+    # merged_pcd = remove_outliers(merged_pcd)  # 移除噪声
     
     return merged_pcd
 
@@ -198,10 +181,11 @@ def main():
     merged_pcd = load_and_merge_point_clouds()
     
     # 保存结果
-    o3d.io.write_point_cloud("merged_table.pcd", merged_pcd)
+    o3d.io.write_point_cloud("merged_sofa.pcd", merged_pcd)
     
     # 可视化
-    o3d.visualization.draw_geometries([merged_pcd])
+    o3d.visualization.draw_geometries([merged_pcd], window_name="Merged Point Cloud")
 
 if __name__ == "__main__":
     main()
+    
