@@ -29,16 +29,16 @@ def preprocess_point_cloud(pcd, voxel_size):
     # 先移除离群点
     pcd = remove_outliers(pcd, nb_neighbors=15, std_ratio=2.5, radius=0.1, min_points=10)
     # 降采样
-    # pcd_down = pcd.voxel_down_sample(voxel_size)
+    pcd_down = pcd.voxel_down_sample(voxel_size)
     
     radius_normal = voxel_size * 3
-    pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
+    pcd_down.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
     
     radius_feature = voxel_size * 6
     pcd_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
-        pcd,
+        pcd_down,
         o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100))
-    return pcd, pcd_fpfh
+    return pcd_down, pcd_fpfh
 
 
 def pairwise_registration(source, target):
@@ -140,11 +140,11 @@ def load_and_merge_point_clouds():
     """加载并合并点云"""
     pcds = []
     # 读取并预处理点云
-    for i in tqdm(range(65, 67), desc="Loading and preprocessing point clouds"):
+    for i in tqdm(range(80, 100), desc="Loading and preprocessing point clouds"):
         pcd = o3d.io.read_point_cloud(f"lidar_data/4 (Frame {i+1}).pcd")
         pcd = remove_outliers(pcd, nb_neighbors=15, std_ratio=2.5, radius=0.1, min_points=10)
-        o3d.visualization.draw_geometries([pcd], window_name=f"Frame {i+1} (Filtered)")
-        print(pcd)
+        # o3d.visualization.draw_geometries([pcd], window_name=f"Frame {i+1} (Filtered)")
+        # print(pcd)
         pcds.append(pcd)
     
     if len(pcds) < 2:
