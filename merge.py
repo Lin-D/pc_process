@@ -41,11 +41,8 @@ def preprocess_point_cloud(pcd, voxel_size):
     return pcd_down, pcd_fpfh
 
 
-def pairwise_registration(source, target):
+def pairwise_registration(source, target, voxel_size=[0.5, 0.2, 0.1, 0.05], max_iterations=[50, 50, 50, 50]):
     """两两配准点云, 使用双尺度策略"""
-    # 双尺度配准参数
-    voxel_sizes = [0.5, 0.2, 0.1]
-    max_iterations = [100, 100, 100]
     current_transformation = np.identity(4)
     
     source.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
