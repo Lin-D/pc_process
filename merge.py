@@ -41,7 +41,7 @@ def preprocess_point_cloud(pcd, voxel_size):
     return pcd_down, pcd_fpfh
 
 
-def pairwise_registration(source, target, voxel_size=[0.5, 0.2, 0.1, 0.05], max_iterations=[50, 50, 50, 50]):
+def pairwise_registration(source, target, voxel_sizes=[0.5, 0.2, 0.1, 0.05], max_iterations=[50, 50, 50, 50]):
     """两两配准点云, 使用双尺度策略"""
     current_transformation = np.identity(4)
     
