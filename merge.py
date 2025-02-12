@@ -41,8 +41,9 @@ def preprocess_point_cloud(pcd, voxel_size):
     return pcd_down, pcd_fpfh
 
 
-def pairwise_registration(source, target, voxel_sizes=[0.5, 0.2, 0.1, 0.05], max_iterations=[50, 50, 50, 50]):
-    """两两配准点云, 使用双尺度策略"""
+def pairwise_registration(source, target):
+    voxel_sizes=[0.5, 0.2, 0.1, 0.05]
+    max_iterations=[50, 50, 50, 50]
     current_transformation = np.identity(4)
     
     source.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
@@ -77,11 +78,14 @@ def pairwise_registration(source, target, voxel_sizes=[0.5, 0.2, 0.1, 0.05], max
             source, target,  # 使用原始点云
             distance_threshold, 
             current_transformation,
-            o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+            o3d.pipelines.registration.TransformationEstimationPointToPlane(),
             o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=iter_num))
         
         current_transformation = reg_p2p.transformation
-        print(f"Scale {scale}, Fitness: {reg_p2p.fitness:.4f}")
+        # 打印最小尺度下的配准匹配度
+        # if scale == len(voxel_sizes) - 1:
+        #     best_fitness = reg_p2p.fitness
+        #     print(f"Final Fitness: {best_fitness:.4f}, RMSE: {reg_p2p.inlier_rmse:.4f}")
     
     return current_transformation if reg_p2p.fitness > 0.3 else None
 
@@ -161,7 +165,7 @@ def load_and_merge_point_clouds():
         
         # 组内配准
         transforms = [np.identity(4)] * len(group)  # 初始化变换矩阵
-        for j in range(len(group)):
+        for j in tqdm(range(len(group)), desc=f'Intra-group Registration of Group No.{i//group_size+1} of {len(pcds)//group_size+1}'):
             if j != ref_idx:
                 trans = pairwise_registration(group[j], ref_pcd)
                 if trans is not None:
@@ -172,7 +176,7 @@ def load_and_merge_point_clouds():
     
     # 2. 配准参考帧
     ref_transforms = [np.identity(4)]
-    for i in range(1, len(ref_pcds)):
+    for i in tqdm(range(1, len(ref_pcds)), desc='Ref-frame Registration'):
         trans = pairwise_registration(ref_pcds[i], ref_pcds[i-1])
         if trans is None:
             ref_transforms.append(ref_transforms[-1])
@@ -206,7 +210,7 @@ def main():
     merged_pcd = load_and_merge_point_clouds()
     
     # 保存结果
-    o3d.io.write_point_cloud("merged_office.pcd", merged_pcd)
+    o3d.io.write_point_cloud("merged_office2.pcd", merged_pcd)
     
     # 可视化
     o3d.visualization.draw_geometries([merged_pcd], window_name="Merged Point Cloud")
