@@ -26,8 +26,6 @@ def remove_outliers(pcd, nb_neighbors=20, std_ratio=2.0, radius=0.05, min_points
 
 def preprocess_point_cloud(pcd, voxel_size):
     """预处理点云: 降采样并计算FPFH特征"""
-    # 先移除离群点
-    pcd = remove_outliers(pcd, nb_neighbors=15, std_ratio=2.5, radius=0.1, min_points=10)
     # 降采样
     pcd_down = pcd.voxel_down_sample(voxel_size)
     
@@ -42,8 +40,9 @@ def preprocess_point_cloud(pcd, voxel_size):
 
 
 def pairwise_registration(source, target):
-    voxel_sizes=[0.5, 0.2, 0.1, 0.05]
-    max_iterations=[50, 50, 50, 50]
+    # voxel_sizes=[0.5, 0.2, 0.1, 0.05]  # office parameters
+    voxel_sizes=[2, 1, 0.5, 0.2, 0.1]
+    max_iterations=[100, 100, 100, 100, 100]
     current_transformation = np.identity(4)
     
     source.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
@@ -83,9 +82,9 @@ def pairwise_registration(source, target):
         
         current_transformation = reg_p2p.transformation
         # 打印最小尺度下的配准匹配度
-        # if scale == len(voxel_sizes) - 1:
-        #     best_fitness = reg_p2p.fitness
-        #     print(f"Final Fitness: {best_fitness:.4f}, RMSE: {reg_p2p.inlier_rmse:.4f}")
+        if scale == len(voxel_sizes) - 1:
+            best_fitness = reg_p2p.fitness
+            print(f"Final Fitness: {best_fitness:.4f}, RMSE: {reg_p2p.inlier_rmse:.4f}")
     
     return current_transformation if reg_p2p.fitness > 0.3 else None
 
@@ -137,80 +136,104 @@ def denoise_merged_cloud(pcd, radius=0.1, knn=50):
     return smooth_pcd
 
 
-def load_and_merge_point_clouds():
+def load_and_merge_point_clouds(pcd_num):
     """加载并合并点云"""
     pcds = []
     # 读取并预处理点云
-    for i in tqdm(range(1, 111), desc="Loading point clouds"):
-        pcd = o3d.io.read_point_cloud(f"lidar_data_64/{i}.pcd")
-        pcd = remove_outliers(pcd, nb_neighbors=15, std_ratio=2.5, radius=0.1, min_points=10)
+    for i in tqdm(range(1, pcd_num+1), desc="Loading point clouds"):
+        pcd = o3d.io.read_point_cloud(f"test_data/{i}_filtered.pcd")
+        # pcd = remove_outliers(pcd, nb_neighbors=15, std_ratio=2.5, radius=0.1, min_points=10)
         pcds.append(pcd)
     
     # 分组处理
-    group_size = 20  # 每组10帧
-    groups = []
-    ref_pcds = []  # 每组的参考帧
-    group_transforms = []  # 每组内部的变换矩阵
-    
-    # 1. 处理每个组
-    for i in range(0, len(pcds), group_size):
-        group = pcds[i:i+group_size]
-        if len(group) < 2:
-            continue
-            
-        # 选择组中间帧作为参考
-        ref_idx = len(group) // 2
-        ref_pcd = group[ref_idx]
-        ref_pcds.append(ref_pcd)
-        
-        # 组内配准
-        transforms = [np.identity(4)] * len(group)  # 初始化变换矩阵
-        for j in tqdm(range(len(group)), desc=f'Intra-group Registration of Group No.{i//group_size+1} of {len(pcds)//group_size+1}'):
-            if j != ref_idx:
-                trans = pairwise_registration(group[j], ref_pcd)
-                if trans is not None:
-                    transforms[j] = trans
-        
-        groups.append(group)
-        group_transforms.append(transforms)
-    
-    # 2. 配准参考帧
-    ref_transforms = [np.identity(4)]
-    for i in tqdm(range(1, len(ref_pcds)), desc='Ref-frame Registration'):
-        trans = pairwise_registration(ref_pcds[i], ref_pcds[i-1])
-        if trans is None:
-            ref_transforms.append(ref_transforms[-1])
+    # 将所有的点云分为多个组，每组选取一个基准帧
+    # 组内其余帧向基准帧进行配准，然后再进行组间基准帧的配准
+    group_size = 20
+    # 如果所提供的帧数太少，直接进行顺序帧间配准
+    if pcd_num < group_size:
+        merged_pcd = o3d.geometry.PointCloud()
+        merged_pcd += pcds[0]
+        if pcd_num == 1:
+            print("Only one frame, no need to group")
         else:
-            global_trans = ref_transforms[-1] @ trans
-            ref_transforms.append(global_trans)
-    
-    # 3. 合并所有点云
-    merged_pcd = o3d.geometry.PointCloud()
-    for i, group in enumerate(groups):
-        ref_trans = ref_transforms[i]
-        group_trans = group_transforms[i]
+            print("Too few frames to group, change registration strategy to frame-wise registration")
+            transforms = [np.identity(4)]
+            for i in tqdm(range(1, len(pcds)), desc='Frame-wise Registration'):
+                trans = pairwise_registration(pcds[i], pcds[i-1])
+                if trans is None:
+                    transforms.append(transforms[-1])
+                else:
+                    global_trans = transforms[-1] @ trans
+                    transforms.append(global_trans)
+                temp = copy.deepcopy(pcds[i])
+                temp.transform(transforms[i])
+                merged_pcd += temp
+            
+    else:
+        groups = []
+        ref_pcds = []  # 每组的参考帧
+        group_transforms = []  # 每组内部的变换矩阵
         
-        # 应用变换
-        for j, pcd in enumerate(group):
-            temp = copy.deepcopy(pcd)
-            # 先应用组内变换，再应用参考帧变换
-            temp.transform(group_trans[j])
-            temp.transform(ref_trans)
-            merged_pcd += temp
+        # 1. 分组并处理每个组
+        for i in range(0, len(pcds), group_size):
+            group = pcds[i:i+group_size]
+            if len(group) < 2:
+                continue
+                
+            # 选择组中间帧作为参考
+            ref_idx = len(group) // 2
+            ref_pcd = group[ref_idx]
+            ref_pcds.append(ref_pcd)
+            
+            # 组内配准，调用pairwise_registration函数
+            transforms = [np.identity(4)] * len(group)
+            for j in tqdm(range(len(group)), desc=f'Intra-group Registration of Group No.{i//group_size+1} of {len(pcds)//group_size+1}'):
+                if j != ref_idx:
+                    trans = pairwise_registration(group[j], ref_pcd)
+                    if trans is not None:
+                        transforms[j] = trans
+                    else:
+                        print(f"Failed to register frame {j} to reference frame {ref_idx} in group {i//group_size+1}")
+            
+            groups.append(group)
+            group_transforms.append(transforms)
+        
+        # 2. 基准帧间配准
+        ref_transforms = [np.identity(4)]
+        for i in tqdm(range(1, len(ref_pcds)), desc='Ref-frame Registration'):
+            trans = pairwise_registration(ref_pcds[i], ref_pcds[i-1])
+            if trans is None:
+                ref_transforms.append(ref_transforms[-1])
+            else:
+                global_trans = ref_transforms[-1] @ trans
+                ref_transforms.append(global_trans)
+        
+        # 3. 合并所有点云
+        merged_pcd = o3d.geometry.PointCloud()
+        for i, group in enumerate(groups):
+            ref_trans = ref_transforms[i]
+            group_trans = group_transforms[i]
+            
+            # 对每一帧，先应用组内变换，再应用参考帧变换，完成全局变换
+            for j, pcd in enumerate(group):
+                temp = copy.deepcopy(pcd)
+                temp.transform(group_trans[j])
+                temp.transform(ref_trans)
+                merged_pcd += temp
     
     # 最终处理
-    merged_pcd = remove_outliers(merged_pcd)
-    merged_pcd = merged_pcd.voxel_down_sample(0.02)
+    # merged_pcd = remove_outliers(merged_pcd)
+    # merged_pcd = merged_pcd.voxel_down_sample(0.02)
     
     return merged_pcd
 
 
 def main():
     # 合并点云
-    merged_pcd = load_and_merge_point_clouds()
+    merged_pcd = load_and_merge_point_clouds(pcd_num=5)
     
     # 保存结果
-    o3d.io.write_point_cloud("merged_office2.pcd", merged_pcd)
+    o3d.io.write_point_cloud("merged/merged_truck4.pcd", merged_pcd)
     
     # 可视化
     o3d.visualization.draw_geometries([merged_pcd], window_name="Merged Point Cloud")
